@@ -31,6 +31,11 @@ class Packet(MultiDict):
     secret = b''
     code = 0
 
+    def __init__(self):
+        self.log = logging.getLogger('RadiusPacket')
+        super().__init__()
+
+
     @property
     def header(self):
         return struct.pack(
@@ -67,6 +72,7 @@ class Packet(MultiDict):
             if key == c.MessageAuthenticator:
                 self.ma_cursor = cursor
             self.add(key, v)
+            self.log.debug("kv %s=%s", key, v)
             cursor += length
 
     def data(self):
@@ -137,6 +143,18 @@ class Packet(MultiDict):
         self.authenticator = header[4:20]
         return self
 
+    def pw_decrypt(self, v):
+        last = self.authenticator.copy()
+        buf = v
+        pw = b''
+        while buf:
+            hash = hashlib.md5(self.secret + last).digest()
+            for i in range(16):
+                pw += bytes((hash[i] ^ buf[i],))
+            (last, buf) = (buf[:16], buf[16:])
+        pw = pw.rstrip(b'\x00')
+        return pw.decode('utf-8')
+
 
 class Message:
     request = None
@@ -200,7 +218,8 @@ class BaseRadius(asyncio.DatagramProtocol):
         if isinstance(client['secret'], str):
             client['secret'] = client['secret'].encode('ascii')
         message.response.secret = message.request.secret = client['secret']
-        message.request.check_ma()
+        if message.request.code in (c.AccessRequest, c.StatusServer):
+            message.request.check_ma()
 
     async def process(self, message):
         await self.recv_client(message)
@@ -209,6 +228,8 @@ class BaseRadius(asyncio.DatagramProtocol):
             await self.recv_AccessRequest(message)
         elif message.request.code == c.AccountingRequest:
             await self.recv_AccountingRequest(message)
+        elif message.request.code == c.StatusServer:
+            await self.recv_StatusServer(message)
 
         if message.response.code not in [2, 3, 5, 11]:
             return
@@ -235,6 +256,9 @@ class RadiusHandler(BaseRadius):
         pass
 
     async def recv_AccountingRequest(self, message):
+        pass
+
+    async def recv_StatusServer(self, message):
         pass
 
     async def send_AccessAccept(self, message):
